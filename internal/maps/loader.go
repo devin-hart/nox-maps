@@ -34,7 +34,9 @@ type ZoneMap struct {
 
 func LoadZone(mapDir, zoneName string) (*ZoneMap, error) {
 	zm := &ZoneMap{
-		Name: zoneName,
+		Name:   zoneName,
+		Lines:  make([]MapLine, 0, 2000),   // Pre-allocate typical map size
+		Labels: make([]MapLabel, 0, 100),   // Pre-allocate typical label count
 		MinX: 99999, MaxX: -99999,
 		MinY: 99999, MaxY: -99999,
 	}

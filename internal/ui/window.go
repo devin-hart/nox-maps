@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"image"
 	"image/color"
 	"math"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
 	"github.com/hajimehoshi/ebiten/v2/text"
+	"github.com/hajimehoshi/ebiten/v2/vector"
 	"golang.org/x/image/font/basicfont"
 )
 
@@ -29,9 +31,10 @@ type Window struct {
 	Zoom       float64
 
 	// Display Options
-	Opacity     float64
-	ShowLabels  bool
-	Breadcrumbs []BreadcrumbPoint
+	Opacity         float64
+	ShowLabels      bool
+	ShowBreadcrumbs bool
+	Breadcrumbs     []BreadcrumbPoint
 
 	// Input State
 	lastMouseX      int
@@ -39,7 +42,9 @@ type Window struct {
 	lastBracketKey  bool
 	lastRBracketKey bool
 	lastLKey        bool
+	lastBKey        bool
 	lastCKey        bool
+	lastKKey        bool
 }
 
 type BreadcrumbPoint struct {
@@ -48,16 +53,17 @@ type BreadcrumbPoint struct {
 
 func NewWindow(engine *parser.Engine, mapDir string, mapConfigPath string) *Window {
 	return &Window{
-		Width:         1280,
-		Height:        720,
-		Title:         "Nox Maps",
-		LogReader:     engine,
-		MapDir:        mapDir,
-		MapConfigPath: mapConfigPath,
-		Zoom:          1.0,
-		Opacity:       1.0,
-		ShowLabels:    true,
-		Breadcrumbs:   make([]BreadcrumbPoint, 0),
+		Width:           1280,
+		Height:          720,
+		Title:           "Nox Maps",
+		LogReader:       engine,
+		MapDir:          mapDir,
+		MapConfigPath:   mapConfigPath,
+		Zoom:            1.0,
+		Opacity:         1.0,
+		ShowLabels:      true,
+		ShowBreadcrumbs: true,
+		Breadcrumbs:     make([]BreadcrumbPoint, 0),
 	}
 }
 
@@ -128,14 +134,28 @@ func (w *Window) Update() error {
 	}
 	w.lastLKey = lPressed
 
-	// 7. CLEAR BREADCRUMBS (C key)
+	// 7. TOGGLE BREADCRUMBS (B key)
+	bPressed := ebiten.IsKeyPressed(ebiten.KeyB)
+	if bPressed && !w.lastBKey {
+		w.ShowBreadcrumbs = !w.ShowBreadcrumbs
+	}
+	w.lastBKey = bPressed
+
+	// 8. CLEAR BREADCRUMBS (C key)
 	cPressed := ebiten.IsKeyPressed(ebiten.KeyC)
 	if cPressed && !w.lastCKey {
 		w.Breadcrumbs = w.Breadcrumbs[:0]
 	}
 	w.lastCKey = cPressed
 
-	// 8. BREADCRUMB TRACKING
+	// 9. CLEAR CORPSE (K key)
+	kPressed := ebiten.IsKeyPressed(ebiten.KeyK)
+	if kPressed && !w.lastKKey && w.LogReader != nil {
+		w.LogReader.CurrentState.HasCorpse = false
+	}
+	w.lastKKey = kPressed
+
+	// 10. BREADCRUMB TRACKING
 	// Add a breadcrumb every ~2 seconds when player moves
 	if w.LogReader != nil {
 		shouldAddBreadcrumb := false
@@ -164,7 +184,7 @@ func (w *Window) Update() error {
 		}
 	}
 
-	// 9. ZONE CHANGE DETECTION
+	// 11. ZONE CHANGE DETECTION
 	if w.LogReader != nil && w.LogReader.CurrentState.Zone != w.CurrentZone {
 		w.CurrentZone = w.LogReader.CurrentState.Zone
 		w.loadMapForZone(w.CurrentZone)
@@ -208,13 +228,18 @@ func (w *Window) Draw(screen *ebiten.Image) {
 	cx, cy := float64(w.Width)/2, float64(w.Height)/2
 
 	if w.MapData != nil {
-		// DRAW LINES
+		// DRAW LINES with stroke width for better visibility
+		lineWidth := float32(1.5)
+		if w.Zoom > 2.0 {
+			lineWidth = float32(2.0)
+		}
+
 		for _, line := range w.MapData.Lines {
-			x1 := (line.X1 - w.CamX) * w.Zoom + cx
-			y1 := (line.Y1 - w.CamY) * w.Zoom + cy
-			x2 := (line.X2 - w.CamX) * w.Zoom + cx
-			y2 := (line.Y2 - w.CamY) * w.Zoom + cy
-			ebitenutil.DrawLine(offscreen, x1, y1, x2, y2, line.Color)
+			x1 := float32((line.X1 - w.CamX) * w.Zoom + cx)
+			y1 := float32((line.Y1 - w.CamY) * w.Zoom + cy)
+			x2 := float32((line.X2 - w.CamX) * w.Zoom + cx)
+			y2 := float32((line.Y2 - w.CamY) * w.Zoom + cy)
+			vector.StrokeLine(offscreen, x1, y1, x2, y2, lineWidth, line.Color, true)
 		}
 
 		// DRAW LABELS (if enabled)
@@ -229,13 +254,21 @@ func (w *Window) Draw(screen *ebiten.Image) {
 			}
 		}
 
-		// DRAW BREADCRUMBS
-		breadcrumbColor := color.RGBA{255, 255, 0, 200}
-		for _, bc := range w.Breadcrumbs {
-			bx := (bc.X - w.CamX) * w.Zoom + cx
-			by := (bc.Y - w.CamY) * w.Zoom + cy
-			ebitenutil.DrawLine(offscreen, bx, by, bx+1, by+1, breadcrumbColor)
+		// DRAW BREADCRUMBS as filled circles (if enabled)
+		if w.ShowBreadcrumbs {
+			breadcrumbColor := color.RGBA{255, 255, 0, 200}
+			breadcrumbSize := float32(2.5)
+			for _, bc := range w.Breadcrumbs {
+				bx := float32((bc.X - w.CamX) * w.Zoom + cx)
+				by := float32((bc.Y - w.CamY) * w.Zoom + cy)
+				vector.DrawFilledCircle(offscreen, bx, by, breadcrumbSize, breadcrumbColor, true)
+			}
 		}
+	}
+
+	// DRAW CORPSE MARKER
+	if w.LogReader != nil && w.LogReader.CurrentState.HasCorpse {
+		w.drawCorpseMarker(offscreen, cx, cy)
 	}
 
 	// DRAW PLAYER ARROW
@@ -253,34 +286,81 @@ func (w *Window) Draw(screen *ebiten.Image) {
 	screen.DrawImage(offscreen, opts)
 }
 
+func (w *Window) drawCorpseMarker(screen *ebiten.Image, cx, cy float64) {
+	s := w.LogReader.CurrentState
+
+	// Convert Corpse World Pos to Screen Pos
+	corpseX := float32((s.CorpseX - w.CamX) * w.Zoom + cx)
+	corpseY := float32((s.CorpseY - w.CamY) * w.Zoom + cy)
+
+	size := float32(12.0 * w.Zoom)
+	if size < 10 { size = 10 }
+	if size > 30 { size = 30 }
+
+	c := color.RGBA{255, 0, 0, 255}
+
+	// Draw filled circle background
+	vector.DrawFilledCircle(screen, corpseX, corpseY, size, color.RGBA{255, 0, 0, 100}, true)
+
+	// Draw stroke circle
+	vector.StrokeCircle(screen, corpseX, corpseY, size, 2.5, c, true)
+
+	// Draw X with thicker lines
+	strokeWidth := float32(3.0)
+	vector.StrokeLine(screen, corpseX-size*0.6, corpseY-size*0.6, corpseX+size*0.6, corpseY+size*0.6, strokeWidth, c, true)
+	vector.StrokeLine(screen, corpseX-size*0.6, corpseY+size*0.6, corpseX+size*0.6, corpseY-size*0.6, strokeWidth, c, true)
+}
+
 func (w *Window) drawPlayerArrow(screen *ebiten.Image, cx, cy float64) {
 	s := w.LogReader.CurrentState
-	
+
 	// Convert Player World Pos to Screen Pos
-	px := (s.X - w.CamX) * w.Zoom + cx
-	py := (s.Y - w.CamY) * w.Zoom + cy
+	px := float32((s.X - w.CamX) * w.Zoom + cx)
+	py := float32((s.Y - w.CamY) * w.Zoom + cy)
 
 	// Heading
-	angle := s.Heading 
+	angle := s.Heading
 
-	size := 10.0 * w.Zoom
+	size := float32(10.0 * w.Zoom)
 	if size < 8 { size = 8 }
 	if size > 25 { size = 25 }
 
 	// Calculate arrow points
-	x1 := px + math.Cos(angle)*size
-	y1 := py + math.Sin(angle)*size 
+	x1 := px + float32(math.Cos(angle))*size
+	y1 := py + float32(math.Sin(angle))*size
 
-	x2 := px + math.Cos(angle + 2.6)*size
-	y2 := py + math.Sin(angle + 2.6)*size
+	x2 := px + float32(math.Cos(angle + 2.6))*size
+	y2 := py + float32(math.Sin(angle + 2.6))*size
 
-	x3 := px + math.Cos(angle - 2.6)*size
-	y3 := py + math.Sin(angle - 2.6)*size
+	x3 := px + float32(math.Cos(angle - 2.6))*size
+	y3 := py + float32(math.Sin(angle - 2.6))*size
 
 	c := color.RGBA{0, 255, 0, 255}
-	ebitenutil.DrawLine(screen, x1, y1, x2, y2, c)
-	ebitenutil.DrawLine(screen, x2, y2, x3, y3, c)
-	ebitenutil.DrawLine(screen, x3, y3, x1, y1, c)
+
+	// Draw filled triangle for better visibility
+	var path vector.Path
+	path.MoveTo(x1, y1)
+	path.LineTo(x2, y2)
+	path.LineTo(x3, y3)
+	path.Close()
+
+	// Fill the arrow
+	vertices, indices := path.AppendVerticesAndIndicesForFilling(nil, nil)
+	for i := range vertices {
+		vertices[i].ColorR = float32(c.R) / 255.0
+		vertices[i].ColorG = float32(c.G) / 255.0
+		vertices[i].ColorB = float32(c.B) / 255.0
+		vertices[i].ColorA = float32(c.A) / 255.0
+	}
+	screen.DrawTriangles(vertices, indices, ebiten.NewImage(1, 1).SubImage(image.Rect(0, 0, 1, 1)).(*ebiten.Image), &ebiten.DrawTrianglesOptions{
+		AntiAlias: true,
+	})
+
+	// Draw stroke outline for better definition
+	strokeWidth := float32(1.5)
+	vector.StrokeLine(screen, x1, y1, x2, y2, strokeWidth, c, true)
+	vector.StrokeLine(screen, x2, y2, x3, y3, strokeWidth, c, true)
+	vector.StrokeLine(screen, x3, y3, x1, y1, strokeWidth, c, true)
 }
 
 func (w *Window) drawUI(screen *ebiten.Image) {
@@ -302,9 +382,19 @@ func (w *Window) drawUI(screen *ebiten.Image) {
 		labelsStatus = "OFF"
 	}
 
-	msg := fmt.Sprintf("Zone: %s | Zoom: %.2f | Opacity: %.0f%%\nCam: %.1f, %.1f\nMouse: %.1f, %.1f\nPlayer: %.1f, %.1f%s\n[SPACE] Center | [L] Labels:%s | [ ] Opacity | [C] Clear Breadcrumbs: %d",
+	breadcrumbsStatus := "ON"
+	if !w.ShowBreadcrumbs {
+		breadcrumbsStatus = "OFF"
+	}
+
+	corpseStatus := ""
+	if w.LogReader.CurrentState.HasCorpse {
+		corpseStatus = " | [K] Clear Corpse"
+	}
+
+	msg := fmt.Sprintf("Zone: %s | Zoom: %.2f | Opacity: %.0f%%\nCam: %.1f, %.1f\nMouse: %.1f, %.1f\nPlayer: %.1f, %.1f%s\n[SPACE] Center | [L] Labels:%s | [B] Breadcrumbs:%s (%d) | [C] Clear | [ ] Opacity%s",
 		w.CurrentZone, w.Zoom, w.Opacity*100, w.CamX, w.CamY, worldX, worldY,
-		w.LogReader.CurrentState.X, w.LogReader.CurrentState.Y, mapInfo, labelsStatus, len(w.Breadcrumbs))
+		w.LogReader.CurrentState.X, w.LogReader.CurrentState.Y, mapInfo, labelsStatus, breadcrumbsStatus, len(w.Breadcrumbs), corpseStatus)
 
 	ebitenutil.DebugPrint(screen, msg)
 }

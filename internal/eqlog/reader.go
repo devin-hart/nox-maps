@@ -3,7 +3,6 @@ package eqlog
 import (
 	"bufio"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -57,13 +56,13 @@ func (r *Reader) detectInitialZone() {
 	}
 	file.Seek(startPos, 0)
 
-	scanner := bufio.NewScanner(file)
+	// Compile regex once
 	zoneRegex := regexp.MustCompile(`You have entered (.+)\.`)
+	scanner := bufio.NewScanner(file)
 
 	var lastZone string
 	for scanner.Scan() {
-		line := scanner.Text()
-		if matches := zoneRegex.FindStringSubmatch(line); len(matches) == 2 {
+		if matches := zoneRegex.FindStringSubmatch(scanner.Text()); len(matches) == 2 {
 			lastZone = matches[1]
 		}
 	}
@@ -119,16 +118,11 @@ func (r *Reader) pollAndRead() {
 		if reader != nil {
 			line, err := reader.ReadString('\n')
 			if err != nil {
-				if err == io.EOF {
-					time.Sleep(100 * time.Millisecond)
-					continue
-				}
 				time.Sleep(100 * time.Millisecond)
 				continue
 			}
 
-			cleanLine := strings.TrimSpace(line)
-			if cleanLine != "" {
+			if cleanLine := strings.TrimSpace(line); cleanLine != "" {
 				r.Lines <- LogLine{
 					Line: cleanLine,
 					Time: time.Now(),
