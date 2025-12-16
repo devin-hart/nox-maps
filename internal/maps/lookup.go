@@ -1,39 +1,34 @@
 package maps
 
 import (
-	"bufio"
+	"encoding/json"
 	"os"
 	"strings"
 )
 
-// LoadZoneLookup reads map_keys.ini and returns a map of "Long Name" -> "shortname"
-func LoadZoneLookup(path string) (map[string]string, error) {
-	lookup := make(map[string]string)
+var ZoneFileMap = make(map[string]string)
 
-	f, err := os.Open(path)
+func LoadZoneConfig(path string) error {
+	file, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	defer f.Close()
+	defer file.Close()
 
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		// Skip comments or empty lines
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "[") {
-			continue
-		}
-
-		// Format is: Long Name = shortname
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) == 2 {
-			longName := strings.TrimSpace(parts[0])
-			shortName := strings.TrimSpace(parts[1])
-			
-			// Normalize keys to lowercase for safer matching
-			lookup[strings.ToLower(longName)] = shortName
-		}
+	var rawMap map[string]string
+	if err := json.NewDecoder(file).Decode(&rawMap); err != nil {
+		return err
 	}
 
-	return lookup, nil
+	for k, v := range rawMap {
+		ZoneFileMap[strings.ToLower(k)] = v
+	}
+	return nil
+}
+
+func GetZoneFileName(zoneName string) string {
+	if val, ok := ZoneFileMap[strings.ToLower(zoneName)]; ok {
+		return val
+	}
+	return ""
 }

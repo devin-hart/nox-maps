@@ -135,11 +135,18 @@ func (zm *ZoneMap) parseFile(path string) (int, error) {
 		parts := strings.Split(content, ",")
 
 		if cmdType == 'L' {
-			// Expected: x1, y1, z1, x2, y2, z2, r, g, b
+			// EQ Map Format: eqY, eqX, z, eqY, eqX, z, r, g, b
+			// Where eqY is S/N axis, eqX is E/W axis
+			// Convert to screen coords: X=eqY (S/N becomes horizontal), Y=eqX (E/W becomes vertical)
 			if len(parts) >= 6 {
+				eqY1 := parseFloat(parts[0])
+				eqX1 := parseFloat(parts[1])
+				eqY2 := parseFloat(parts[3])
+				eqX2 := parseFloat(parts[4])
+
 				l := MapLine{
-					X1: parseFloat(parts[0]), Y1: parseFloat(parts[1]), Z1: parseFloat(parts[2]),
-					X2: parseFloat(parts[3]), Y2: parseFloat(parts[4]), Z2: parseFloat(parts[5]),
+					X1: eqY1, Y1: eqX1, Z1: parseFloat(parts[2]),
+					X2: eqY2, Y2: eqX2, Z2: parseFloat(parts[5]),
 				}
 				if len(parts) >= 9 {
 					l.Color = parseColor(parts[6], parts[7], parts[8])
@@ -152,10 +159,15 @@ func (zm *ZoneMap) parseFile(path string) (int, error) {
 				count++
 			}
 		} else if cmdType == 'P' {
-			// Expected: x, y, z, r, g, b, size, text...
+			// EQ Map Format: eqY, eqX, z, r, g, b, size, text...
+			// Where eqY is S/N axis, eqX is E/W axis
+			// Convert to screen coords: X=eqY, Y=eqX
 			if len(parts) >= 7 {
+				eqY := parseFloat(parts[0])
+				eqX := parseFloat(parts[1])
+
 				p := MapLabel{
-					X: parseFloat(parts[0]), Y: parseFloat(parts[1]), Z: parseFloat(parts[2]),
+					X: eqY, Y: eqX, Z: parseFloat(parts[2]),
 					Color: parseColor(parts[3], parts[4], parts[5]),
 					Size:  parseInt(parts[6]),
 				}

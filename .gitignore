@@ -1,6 +1,5 @@
 # --- Binaries & Compilation ---
 # Main executables (Linux/Mac)
-nox-maps
 nox-maps-mac
 nox-maps-mac-arm
 
@@ -27,3 +26,4 @@ Thumbs.db
 # --- Dependency Directories ---
 # Only uncomment if you are using a vendor folder and don't want to commit it
 # vendor/
+.claude

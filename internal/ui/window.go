@@ -4,333 +4,313 @@ import (
 	"fmt"
 	"image/color"
 	"math"
-	"path/filepath"
-	"strings"
 
 	"github.com/devin-hart/nox-maps/internal/maps"
 	"github.com/devin-hart/nox-maps/internal/parser"
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
-	"github.com/hajimehoshi/ebiten/v2/inpututil"
-	"github.com/hajimehoshi/ebiten/v2/vector"
+	"github.com/hajimehoshi/ebiten/v2/text"
+	"golang.org/x/image/font/basicfont"
 )
 
-type Breadcrumb struct {
+type Window struct {
+	Width, Height int
+	Title         string
+
+	// Data Sources
+	LogReader     *parser.Engine
+	MapData       *maps.ZoneMap
+	MapDir        string
+	MapConfigPath string
+	CurrentZone   string
+
+	// Viewport State
+	CamX, CamY float64
+	Zoom       float64
+
+	// Display Options
+	Opacity     float64
+	ShowLabels  bool
+	Breadcrumbs []BreadcrumbPoint
+
+	// Input State
+	lastMouseX      int
+	lastMouseY      int
+	lastBracketKey  bool
+	lastRBracketKey bool
+	lastLKey        bool
+	lastCKey        bool
+}
+
+type BreadcrumbPoint struct {
 	X, Y float64
 }
 
-type Window struct {
-	Parser     *parser.Engine
-	CurrentMap *maps.ZoneMap
-	ZoneLookup map[string]string
-	MapDir     string
-	
-	Zoom        float64
-	IsDragging  bool
-	DragStartX  int
-	DragStartY  int
-	OffsetX     float64
-	OffsetY     float64
-	
-	// VISUAL SETTINGS
-	BackgroundAlpha uint8 
-	ShowTrail       bool 
-	ShowLabels      bool 
-
-	// PLAYER CALIBRATION
-	PlayerMultX float64 
-	PlayerMultY float64 
-	PlayerSwap  bool    
-	
-	Trail []Breadcrumb
-	Width, Height int
-}
-
-func NewWindow(p *parser.Engine, mapDir, lookupPath string) *Window {
-	lookup, err := maps.LoadZoneLookup(lookupPath)
-	if err != nil {
-		fmt.Printf("⚠️ Warning: Could not load map_keys.ini: %v\n", err)
-		lookup = make(map[string]string)
-	} else {
-		fmt.Printf("📘 Loaded %d zone translations from %s\n", len(lookup), filepath.Base(lookupPath))
-	}
-
+func NewWindow(engine *parser.Engine, mapDir string, mapConfigPath string) *Window {
 	return &Window{
-		Parser:     p,
-		MapDir:     mapDir,
-		ZoneLookup: lookup,
-		Zoom:       1.0,
-		
-		BackgroundAlpha: 100,
-		ShowTrail:       true,
-		ShowLabels:      true,
-
-		// Defaults
-		PlayerMultX: -1.0, 
-		PlayerMultY: -1.0,
-		PlayerSwap:  false,
-		
-		Trail:      make([]Breadcrumb, 0),
-		Width:      400,
-		Height:     400,
+		Width:         1280,
+		Height:        720,
+		Title:         "Nox Maps",
+		LogReader:     engine,
+		MapDir:        mapDir,
+		MapConfigPath: mapConfigPath,
+		Zoom:          1.0,
+		Opacity:       1.0,
+		ShowLabels:    true,
+		Breadcrumbs:   make([]BreadcrumbPoint, 0),
 	}
 }
 
-func (w *Window) Update() error {
-	w.checkZoneChange()
-	w.updateTrail()
+func (w *Window) Init() error {
+	ebiten.SetWindowTitle(w.Title)
+	ebiten.SetWindowSize(w.Width, w.Height)
+	ebiten.SetWindowResizingMode(ebiten.WindowResizingModeEnabled)
+	ebiten.SetScreenTransparent(true)
 
-	// --- TOGGLES ---
-	if inpututil.IsKeyJustPressed(ebiten.KeyT) { w.ShowTrail = !w.ShowTrail }
-	if inpututil.IsKeyJustPressed(ebiten.KeyC) { w.Trail = make([]Breadcrumb, 0) }
-	if inpututil.IsKeyJustPressed(ebiten.KeyL) { w.ShowLabels = !w.ShowLabels }
-	
-	// 'K' Clears Corpse Marker (MANUAL OVERRIDE)
-	if inpututil.IsKeyJustPressed(ebiten.KeyK) {
-		w.Parser.CurrentState.HasCorpse = false
-	}
-
-	// [ / ] adjust opacity
-	if ebiten.IsKeyPressed(ebiten.KeyLeftBracket) {
-		if w.BackgroundAlpha > 0 { w.BackgroundAlpha -= 5 }
-	}
-	if ebiten.IsKeyPressed(ebiten.KeyRightBracket) {
-		if w.BackgroundAlpha < 250 { w.BackgroundAlpha += 5 }
-	}
-
-	// --- PLAYER CALIBRATION ---
-	if inpututil.IsKeyJustPressed(ebiten.KeyF1) { w.PlayerMultX *= -1 }
-	if inpututil.IsKeyJustPressed(ebiten.KeyF2) { w.PlayerMultY *= -1 }
-	if inpututil.IsKeyJustPressed(ebiten.KeyF3) { w.PlayerSwap = !w.PlayerSwap }
-	
-	if inpututil.IsKeyJustPressed(ebiten.KeyF5) { w.CenterOnMapBounds() }
-	if inpututil.IsKeyJustPressed(ebiten.KeySpace) { w.CenterOnPlayer() }
-
-	// ZOOM
-	_, dy := ebiten.Wheel()
-	if dy != 0 {
-		if dy > 0 { w.Zoom *= 1.1 } else { w.Zoom /= 1.1 }
-	}
-
-	// PAN
-	if ebiten.IsMouseButtonPressed(ebiten.MouseButtonRight) {
-		cx, cy := ebiten.CursorPosition()
-		if !w.IsDragging {
-			w.IsDragging = true
-			w.DragStartX, w.DragStartY = cx, cy
-		} else {
-			w.OffsetX += float64(cx - w.DragStartX)
-			w.OffsetY += float64(cy - w.DragStartY)
-			w.DragStartX, w.DragStartY = cx, cy
-		}
-	} else {
-		w.IsDragging = false
-	}
-	
+	maps.LoadZoneConfig(w.MapConfigPath)
 	return nil
 }
 
-func (w *Window) updateTrail() {
-	px, py := w.GetCalibratedPlayerPos()
-	if len(w.Trail) == 0 {
-		w.Trail = append(w.Trail, Breadcrumb{px, py})
-		return
-	}
-	last := w.Trail[len(w.Trail)-1]
-	dist := math.Sqrt(math.Pow(px-last.X, 2) + math.Pow(py-last.Y, 2))
-	if dist > 10 {
-		w.Trail = append(w.Trail, Breadcrumb{px, py})
-		if len(w.Trail) > 500 { w.Trail = w.Trail[1:] }
-	}
-}
-
-func (w *Window) GetCalibratedPlayerPos() (float64, float64) {
-	rawX := w.Parser.CurrentState.X
-	rawY := w.Parser.CurrentState.Y
-	if w.PlayerSwap { rawX, rawY = rawY, rawX }
-	return rawX * w.PlayerMultX, rawY * w.PlayerMultY
-}
-
-func (w *Window) Draw(screen *ebiten.Image) {
-	screen.Fill(color.RGBA{0, 0, 0, w.BackgroundAlpha})
-
-	if w.CurrentMap == nil {
-		ebitenutil.DebugPrint(screen, fmt.Sprintf("Waiting for Zone... (Last Seen: %s)", w.Parser.CurrentState.Zone))
-		return
+func (w *Window) Update() error {
+	// 1. MOUSE ZOOM (Wheel)
+	_, dy := ebiten.Wheel()
+	if dy > 0 {
+		w.Zoom *= 1.1
+	} else if dy < 0 {
+		w.Zoom /= 1.1
 	}
 
-	cx, cy := float64(w.Width)/2, float64(w.Height)/2
-	
-	// 1. Draw Lines
-	for _, l := range w.CurrentMap.Lines {
-		x1, y1 := w.mapToScreen(l.X1, l.Y1, cx, cy)
-		x2, y2 := w.mapToScreen(l.X2, l.Y2, cx, cy)
-		vector.StrokeLine(screen, float32(x1), float32(y1), float32(x2), float32(y2), 1, l.Color, true)
+	// 2. MOUSE PAN (Right Click)
+	mx, my := ebiten.CursorPosition()
+	if ebiten.IsMouseButtonPressed(ebiten.MouseButtonRight) {
+		dx := float64(mx - w.lastMouseX)
+		dy := float64(my - w.lastMouseY)
+		
+		// Move Camera OPPOSITE to mouse drag to simulate "grabbing" the map
+		w.CamX -= dx / w.Zoom
+		w.CamY -= dy / w.Zoom
+	}
+	w.lastMouseX = mx
+	w.lastMouseY = my
+
+	// 3. KEYBOARD PAN
+	moveSpeed := 10.0 / w.Zoom
+	if ebiten.IsKeyPressed(ebiten.KeyW) { w.CamY -= moveSpeed } // Up moves camera up (decreases Y)
+	if ebiten.IsKeyPressed(ebiten.KeyS) { w.CamY += moveSpeed }
+	if ebiten.IsKeyPressed(ebiten.KeyA) { w.CamX -= moveSpeed }
+	if ebiten.IsKeyPressed(ebiten.KeyD) { w.CamX += moveSpeed }
+
+	// 4. CENTER ON PLAYER (Spacebar)
+	if ebiten.IsKeyPressed(ebiten.KeySpace) && w.LogReader != nil {
+		w.CamX = w.LogReader.CurrentState.X
+		w.CamY = w.LogReader.CurrentState.Y
 	}
 
-	// 2. Draw Trail
-	if w.ShowTrail {
-		for _, b := range w.Trail {
-			bx, by := w.mapToScreen(b.X, b.Y, cx, cy)
-			vector.DrawFilledCircle(screen, float32(bx), float32(by), 1, color.RGBA{0, 255, 255, 100}, true)
+	// 5. OPACITY CONTROLS ([ and ])
+	bracketPressed := ebiten.IsKeyPressed(ebiten.KeyBracketLeft)
+	if bracketPressed && !w.lastBracketKey {
+		w.Opacity -= 0.1
+		if w.Opacity < 0.1 { w.Opacity = 0.1 }
+	}
+	w.lastBracketKey = bracketPressed
+
+	rBracketPressed := ebiten.IsKeyPressed(ebiten.KeyBracketRight)
+	if rBracketPressed && !w.lastRBracketKey {
+		w.Opacity += 0.1
+		if w.Opacity > 1.0 { w.Opacity = 1.0 }
+	}
+	w.lastRBracketKey = rBracketPressed
+
+	// 6. TOGGLE LABELS (L key)
+	lPressed := ebiten.IsKeyPressed(ebiten.KeyL)
+	if lPressed && !w.lastLKey {
+		w.ShowLabels = !w.ShowLabels
+	}
+	w.lastLKey = lPressed
+
+	// 7. CLEAR BREADCRUMBS (C key)
+	cPressed := ebiten.IsKeyPressed(ebiten.KeyC)
+	if cPressed && !w.lastCKey {
+		w.Breadcrumbs = w.Breadcrumbs[:0]
+	}
+	w.lastCKey = cPressed
+
+	// 8. BREADCRUMB TRACKING
+	// Add a breadcrumb every ~2 seconds when player moves
+	if w.LogReader != nil {
+		shouldAddBreadcrumb := false
+		if len(w.Breadcrumbs) == 0 {
+			shouldAddBreadcrumb = true
+		} else {
+			lastBC := w.Breadcrumbs[len(w.Breadcrumbs)-1]
+			dx := w.LogReader.CurrentState.X - lastBC.X
+			dy := w.LogReader.CurrentState.Y - lastBC.Y
+			dist := math.Sqrt(dx*dx + dy*dy)
+			// Add breadcrumb if moved more than 50 units
+			if dist > 50 {
+				shouldAddBreadcrumb = true
+			}
 		}
-	}
 
-	// 3. Draw Labels
-	if w.ShowLabels {
-		for _, p := range w.CurrentMap.Labels {
-			px, py := w.mapToScreen(p.X, p.Y, cx, cy)
-			if isZoneLabel(p.Text) {
-				vector.DrawFilledCircle(screen, float32(px), float32(py), 4, color.RGBA{0, 255, 0, 255}, true)
-				cleanText := formatZoneText(p.Text)
-				ebitenutil.DebugPrintAt(screen, cleanText, int(px)+7, int(py)-5)
-			} else {
-				vector.DrawFilledCircle(screen, float32(px), float32(py), 2, p.Color, true)
-				ebitenutil.DebugPrintAt(screen, p.Text, int(px)+4, int(py)-4)
+		if shouldAddBreadcrumb {
+			w.Breadcrumbs = append(w.Breadcrumbs, BreadcrumbPoint{
+				X: w.LogReader.CurrentState.X,
+				Y: w.LogReader.CurrentState.Y,
+			})
+			// Limit to last 500 breadcrumbs
+			if len(w.Breadcrumbs) > 500 {
+				w.Breadcrumbs = w.Breadcrumbs[1:]
 			}
 		}
 	}
 
-	// 4. Draw Corpse Run Line
-	if w.Parser.CurrentState.HasCorpse {
-		rawCX := w.Parser.CurrentState.CorpseX
-		rawCY := w.Parser.CurrentState.CorpseY
-		if w.PlayerSwap { rawCX, rawCY = rawCY, rawCX }
-		
-		calibratedCX := rawCX * w.PlayerMultX
-		calibratedCY := rawCY * w.PlayerMultY
-
-		cxScreen, cyScreen := w.mapToScreen(calibratedCX, calibratedCY, cx, cy)
-		px, py := w.GetCalibratedPlayerPos()
-		pxScreen, pyScreen := w.mapToScreen(px, py, cx, cy)
-
-		// RED LINE to Corpse
-		vector.StrokeLine(screen, float32(pxScreen), float32(pyScreen), float32(cxScreen), float32(cyScreen), 2, color.RGBA{255, 0, 0, 255}, true)
-		
-		// RED "X" at Corpse
-		vector.StrokeLine(screen, float32(cxScreen)-5, float32(cyScreen)-5, float32(cxScreen)+5, float32(cyScreen)+5, 2, color.RGBA{255, 0, 0, 255}, true)
-		vector.StrokeLine(screen, float32(cxScreen)-5, float32(cyScreen)+5, float32(cxScreen)+5, float32(cyScreen)-5, 2, color.RGBA{255, 0, 0, 255}, true)
-		ebitenutil.DebugPrintAt(screen, "CORPSE", int(cxScreen)+5, int(cyScreen))
+	// 9. ZONE CHANGE DETECTION
+	if w.LogReader != nil && w.LogReader.CurrentState.Zone != w.CurrentZone {
+		w.CurrentZone = w.LogReader.CurrentState.Zone
+		w.loadMapForZone(w.CurrentZone)
+		w.Breadcrumbs = w.Breadcrumbs[:0] // Clear breadcrumbs when changing zones
 	}
-
-	// 5. Draw Player Arrow
-	worldPx, worldPy := w.GetCalibratedPlayerPos()
-	px, py := w.mapToScreen(worldPx, worldPy, cx, cy)
-	drawPlayerArrow(screen, px, py, w.Parser.CurrentState.Heading, w.PlayerMultX, w.PlayerMultY)
-
-	// UI
-	trailStatus := "ON"
-	if !w.ShowTrail { trailStatus = "OFF" }
-	labelStatus := "ON"
-	if !w.ShowLabels { labelStatus = "OFF" }
-	
-	// Dynamic Corpse Status
-	corpseStatus := ""
-	if w.Parser.CurrentState.HasCorpse { 
-		corpseStatus = "| [K] CLEAR CORPSE" 
-	}
-
-	status := fmt.Sprintf("Zone: %s | Alpha: %d\n[T] Trail:%s | [L] Labels:%s %s\n[Space] Center", 
-		w.CurrentMap.Name, w.BackgroundAlpha, trailStatus, labelStatus, corpseStatus)
-	ebitenutil.DebugPrint(screen, status)
-
-	mx, my := ebiten.CursorPosition()
-	mapMX, mapMY := w.screenToMap(float64(mx), float64(my), cx, cy)
-	finalMX := mapMX * w.PlayerMultX
-	finalMY := mapMY * w.PlayerMultY
-	cursorText := fmt.Sprintf("Cursor: %.0f, %.0f", finalMX, finalMY)
-	ebitenutil.DebugPrintAt(screen, cursorText, w.Width - 140, 10)
+	return nil
 }
 
-func drawPlayerArrow(screen *ebiten.Image, cx, cy, heading, multX, multY float64) {
-	size := 8.0
-	p1x, p1y := size, 0.0
-	p2x, p2y := -size/2, -size/2
-	p3x, p3y := -size/2, size/2
-
-	rotate := func(x, y, angle float64) (float64, float64) {
-		sin, cos := math.Sincos(angle)
-		return x*cos - y*sin, x*sin + y*cos
-	}
-
-	rx1, ry1 := rotate(p1x, p1y, heading)
-	rx2, ry2 := rotate(p2x, p2y, heading)
-	rx3, ry3 := rotate(p3x, p3y, heading)
-
-	rx1 *= multX; ry1 *= multY
-	rx2 *= multX; ry2 *= multY
-	rx3 *= multX; ry3 *= multY
-
-	vector.StrokeLine(screen, float32(cx+rx2), float32(cy+ry2), float32(cx+rx1), float32(cy+ry1), 2, color.RGBA{255, 0, 0, 255}, true)
-	vector.StrokeLine(screen, float32(cx+rx1), float32(cy+ry1), float32(cx+rx3), float32(cy+ry3), 2, color.RGBA{255, 0, 0, 255}, true)
-	vector.StrokeLine(screen, float32(cx+rx3), float32(cy+ry3), float32(cx+rx2), float32(cy+ry2), 2, color.RGBA{255, 0, 0, 255}, true)
-}
-
-func (w *Window) mapToScreen(wx, wy, cx, cy float64) (float64, float64) {
-	screenX := (wx * 1.0 * w.Zoom) + w.OffsetX + cx
-	screenY := (wy * 1.0 * w.Zoom) + w.OffsetY + cy
-	return screenX, screenY
-}
-
-func (w *Window) screenToMap(sx, sy, cx, cy float64) (float64, float64) {
-	wx := (sx - cx - w.OffsetX) / w.Zoom
-	wy := (sy - cy - w.OffsetY) / w.Zoom
-	return wx, wy
-}
-
-func (w *Window) checkZoneChange() {
-	newZoneName := w.Parser.CurrentState.Zone
-	if w.CurrentMap != nil && w.CurrentMap.Name == newZoneName { return }
-	if newZoneName == "" || newZoneName == "Unknown" { return }
-
-	shortName, exists := w.ZoneLookup[strings.ToLower(newZoneName)]
-	if !exists { shortName = newZoneName }
-
-	w.Trail = make([]Breadcrumb, 0)
-	fmt.Printf("🗺️ Zone Change Detected: %s -> Loading %s...\n", newZoneName, shortName)
-	w.LoadMap(shortName, newZoneName)
-}
-
-func (w *Window) LoadMap(shortName, longName string) {
-	m, err := maps.LoadZone(w.MapDir, shortName)
-	if err != nil {
-		fmt.Printf("FAILED to load map: %v\n", err)
-		m = &maps.ZoneMap{Name: longName}
+func (w *Window) loadMapForZone(zoneName string) {
+	fmt.Printf("\n🗺️  Loading zone: '%s'\n", zoneName)
+	fileCode := maps.GetZoneFileName(zoneName)
+	if fileCode == "" {
+		fileCode = zoneName
+		fmt.Printf("  No mapping found, using zone name as filename\n")
 	} else {
-		fmt.Printf("SUCCESS. Loaded map with %d lines, %d labels.\n", len(m.Lines), len(m.Labels))
+		fmt.Printf("  Mapped to file: '%s'\n", fileCode)
 	}
-	m.Name = longName
-	w.CurrentMap = m
-	w.CenterOnPlayer()
+
+	data, err := maps.LoadZone(w.MapDir, fileCode)
+	if err != nil {
+		fmt.Printf("❌ Error loading map %s: %v\n", zoneName, err)
+		w.MapData = nil
+	} else {
+		w.MapData = data
+		fmt.Printf("✅ Map loaded: %d lines, %d labels\n", len(data.Lines), len(data.Labels))
+		fmt.Printf("  Bounds: X[%.0f to %.0f] Y[%.0f to %.0f]\n",
+			data.MinX, data.MaxX, data.MinY, data.MaxY)
+
+		// Auto-center camera
+		w.CamX = (data.MinX + data.MaxX) / 2
+		w.CamY = (data.MinY + data.MaxY) / 2
+		fmt.Printf("  Camera centered at: (%.1f, %.1f)\n", w.CamX, w.CamY)
+	}
 }
 
-func (w *Window) CenterOnPlayer() {
-	px, py := w.GetCalibratedPlayerPos()
-	w.OffsetX = -(px * w.Zoom)
-	w.OffsetY = -(py * w.Zoom)
+func (w *Window) Draw(screen *ebiten.Image) {
+	// Create offscreen image for all map content
+	offscreen := ebiten.NewImage(w.Width, w.Height)
+	offscreen.Fill(color.Black)
+
+	cx, cy := float64(w.Width)/2, float64(w.Height)/2
+
+	if w.MapData != nil {
+		// DRAW LINES
+		for _, line := range w.MapData.Lines {
+			x1 := (line.X1 - w.CamX) * w.Zoom + cx
+			y1 := (line.Y1 - w.CamY) * w.Zoom + cy
+			x2 := (line.X2 - w.CamX) * w.Zoom + cx
+			y2 := (line.Y2 - w.CamY) * w.Zoom + cy
+			ebitenutil.DrawLine(offscreen, x1, y1, x2, y2, line.Color)
+		}
+
+		// DRAW LABELS (if enabled)
+		if w.ShowLabels {
+			for _, lbl := range w.MapData.Labels {
+				lx := (lbl.X - w.CamX) * w.Zoom + cx
+				ly := (lbl.Y - w.CamY) * w.Zoom + cy
+
+				if lx > -50 && lx < float64(w.Width)+50 && ly > -50 && ly < float64(w.Height)+50 {
+					text.Draw(offscreen, lbl.Text, basicfont.Face7x13, int(lx), int(ly), lbl.Color)
+				}
+			}
+		}
+
+		// DRAW BREADCRUMBS
+		breadcrumbColor := color.RGBA{255, 255, 0, 200}
+		for _, bc := range w.Breadcrumbs {
+			bx := (bc.X - w.CamX) * w.Zoom + cx
+			by := (bc.Y - w.CamY) * w.Zoom + cy
+			ebitenutil.DrawLine(offscreen, bx, by, bx+1, by+1, breadcrumbColor)
+		}
+	}
+
+	// DRAW PLAYER ARROW
+	if w.LogReader != nil {
+		w.drawPlayerArrow(offscreen, cx, cy)
+	}
+
+	// DRAW UI / DEBUG
+	w.drawUI(offscreen)
+
+	// Apply opacity to entire screen and enable filtering for anti-aliasing
+	opts := &ebiten.DrawImageOptions{}
+	opts.ColorScale.ScaleAlpha(float32(w.Opacity))
+	opts.Filter = ebiten.FilterLinear
+	screen.DrawImage(offscreen, opts)
 }
 
-func (w *Window) CenterOnMapBounds() {
-	if w.CurrentMap == nil { return }
-	midX := (w.CurrentMap.MinX + w.CurrentMap.MaxX) / 2
-	midY := (w.CurrentMap.MinY + w.CurrentMap.MaxY) / 2
-	w.OffsetX = -(midX * w.Zoom)
-	w.OffsetY = -(midY * w.Zoom)
+func (w *Window) drawPlayerArrow(screen *ebiten.Image, cx, cy float64) {
+	s := w.LogReader.CurrentState
+	
+	// Convert Player World Pos to Screen Pos
+	px := (s.X - w.CamX) * w.Zoom + cx
+	py := (s.Y - w.CamY) * w.Zoom + cy
+
+	// Heading
+	angle := s.Heading 
+
+	size := 10.0 * w.Zoom
+	if size < 8 { size = 8 }
+	if size > 25 { size = 25 }
+
+	// Calculate arrow points
+	x1 := px + math.Cos(angle)*size
+	y1 := py + math.Sin(angle)*size 
+
+	x2 := px + math.Cos(angle + 2.6)*size
+	y2 := py + math.Sin(angle + 2.6)*size
+
+	x3 := px + math.Cos(angle - 2.6)*size
+	y3 := py + math.Sin(angle - 2.6)*size
+
+	c := color.RGBA{0, 255, 0, 255}
+	ebitenutil.DrawLine(screen, x1, y1, x2, y2, c)
+	ebitenutil.DrawLine(screen, x2, y2, x3, y3, c)
+	ebitenutil.DrawLine(screen, x3, y3, x1, y1, c)
+}
+
+func (w *Window) drawUI(screen *ebiten.Image) {
+	mx, my := ebiten.CursorPosition()
+	cx, cy := float64(w.Width)/2, float64(w.Height)/2
+
+	// Reverse transform: Screen -> World
+	worldX := (float64(mx) - cx) / w.Zoom + w.CamX
+	worldY := (float64(my) - cy) / w.Zoom + w.CamY
+
+	var mapInfo string
+	if w.MapData != nil {
+		mapInfo = fmt.Sprintf("\nMap Bounds: X[%.0f to %.0f] Y[%.0f to %.0f]",
+			w.MapData.MinX, w.MapData.MaxX, w.MapData.MinY, w.MapData.MaxY)
+	}
+
+	labelsStatus := "ON"
+	if !w.ShowLabels {
+		labelsStatus = "OFF"
+	}
+
+	msg := fmt.Sprintf("Zone: %s | Zoom: %.2f | Opacity: %.0f%%\nCam: %.1f, %.1f\nMouse: %.1f, %.1f\nPlayer: %.1f, %.1f%s\n[SPACE] Center | [L] Labels:%s | [ ] Opacity | [C] Clear Breadcrumbs: %d",
+		w.CurrentZone, w.Zoom, w.Opacity*100, w.CamX, w.CamY, worldX, worldY,
+		w.LogReader.CurrentState.X, w.LogReader.CurrentState.Y, mapInfo, labelsStatus, len(w.Breadcrumbs))
+
+	ebitenutil.DebugPrint(screen, msg)
 }
 
 func (w *Window) Layout(outsideWidth, outsideHeight int) (int, int) {
 	w.Width = outsideWidth
 	w.Height = outsideHeight
-	return w.Width, w.Height
-}
-
-// --- HELPER FUNCTIONS ---
-
-func isZoneLabel(text string) bool {
-	t := strings.ToLower(text)
-	return strings.HasPrefix(t, "to_") || strings.Contains(t, "zone line")
-}
-
-func formatZoneText(text string) string {
-	return strings.ReplaceAll(text, "_", " ")
+	return outsideWidth, outsideHeight
 }

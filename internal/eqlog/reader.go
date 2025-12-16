@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -17,8 +18,9 @@ type LogLine struct {
 }
 
 type Reader struct {
-	EqDir     string
-	Lines     chan LogLine
+	EqDir       string
+	Lines       chan LogLine
+	InitialZone string
 }
 
 func NewReader(eqDir string) *Reader {
@@ -29,8 +31,47 @@ func NewReader(eqDir string) *Reader {
 }
 
 func (r *Reader) Start() error {
+	// Try to detect initial zone from log history
+	r.detectInitialZone()
 	go r.pollAndRead()
 	return nil
+}
+
+func (r *Reader) detectInitialZone() {
+	logPath, err := r.findLatestLog()
+	if err != nil {
+		return
+	}
+
+	file, err := os.Open(logPath)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+
+	// Read last 50KB of log to find most recent zone
+	stat, _ := file.Stat()
+	startPos := stat.Size() - 50000
+	if startPos < 0 {
+		startPos = 0
+	}
+	file.Seek(startPos, 0)
+
+	scanner := bufio.NewScanner(file)
+	zoneRegex := regexp.MustCompile(`You have entered (.+)\.`)
+
+	var lastZone string
+	for scanner.Scan() {
+		line := scanner.Text()
+		if matches := zoneRegex.FindStringSubmatch(line); len(matches) == 2 {
+			lastZone = matches[1]
+		}
+	}
+
+	if lastZone != "" {
+		r.InitialZone = lastZone
+		fmt.Printf("🌍 Detected initial zone from log: '%s'\n", lastZone)
+	}
 }
 
 func (r *Reader) pollAndRead() {
