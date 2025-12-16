@@ -1,0 +1,29 @@
+# --- Binaries & Compilation ---
+# Main executables (Linux/Mac)
+nox-maps
+nox-maps-mac
+nox-maps-mac-arm
+
+# Windows executable
+*.exe
+*.dll
+
+# Go build artifacts
+*.out
+*.test
+*.prof
+
+# --- Project Specific ---
+# Ignore local testing logs (don't commit your chat history!)
+eqlog_*.txt
+*.log
+
+# --- IDEs & OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- Dependency Directories ---
+# Only uncomment if you are using a vendor folder and don't want to commit it
+# vendor/
