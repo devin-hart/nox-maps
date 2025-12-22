@@ -14,10 +14,11 @@ type PlayerState struct {
 	X, Y, Z    float64
 	Heading    float64
 	Zone       string
-	
+
 	// CORPSE STATE
 	CorpseX    float64
 	CorpseY    float64
+	CorpseZone string
 	HasCorpse  bool
 }
 
@@ -80,6 +81,14 @@ func (e *Engine) ProcessLines(reader *eqlog.Reader, lines <-chan eqlog.LogLine) 
 		// 2. ZONE
 		if matches := zoneRegex.FindStringSubmatch(line); len(matches) == 2 {
 			newZone := matches[1]
+
+			// Filter out status messages that aren't real zones
+			// e.g., "an Arena (PvP) area" is a status, not a zone name
+			if strings.Contains(newZone, "(PvP)") ||
+			   strings.HasSuffix(newZone, " area") {
+				continue
+			}
+
 			if newZone != e.CurrentState.Zone {
 				fmt.Printf("🌍 Zone detected: '%s'\n", newZone)
 				e.CurrentState.Zone = newZone
@@ -91,13 +100,19 @@ func (e *Engine) ProcessLines(reader *eqlog.Reader, lines <-chan eqlog.LogLine) 
 		if strings.Contains(line, "You have been slain") {
 			e.CurrentState.CorpseX = e.CurrentState.X
 			e.CurrentState.CorpseY = e.CurrentState.Y
+			e.CurrentState.CorpseZone = e.CurrentState.Zone
 			e.CurrentState.HasCorpse = true
+			fmt.Printf("💀 Died in zone: '%s' at (%.1f, %.1f)\n", e.CurrentState.CorpseZone, e.CurrentState.CorpseX, e.CurrentState.CorpseY)
 			continue
 		}
 
-		// 4. RECOVERY
-		if strings.Contains(line, "You summon your corpse") {
+		// 4. RECOVERY - Multiple ways to recover corpse
+		if strings.Contains(line, "Summoning") && strings.Contains(line, "corpse") ||
+			strings.Contains(line, "You receive a resurrection") ||
+			strings.Contains(line, "You have been resurrected") ||
+			strings.Contains(line, "corpse decays") {
 			e.CurrentState.HasCorpse = false
+			fmt.Printf("💀 Corpse recovered/cleared\n")
 		}
 	}
 }

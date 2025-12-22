@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/devin-hart/nox-maps/internal/config"
 	"github.com/devin-hart/nox-maps/internal/eqlog"
 	"github.com/devin-hart/nox-maps/internal/parser"
 	"github.com/devin-hart/nox-maps/internal/ui"
@@ -13,27 +14,33 @@ import (
 )
 
 func main() {
-	eqPath := "/home/wizardbeard/Games/EverQuest Project 1999"
+	cfg := config.Load()
 
 	cwd, _ := os.Getwd()
 	projectMapPath := filepath.Join(cwd, "assets", "maps")
-	
+
 	// CHANGED: Using JSON configuration
 	lookupPath := filepath.Join(projectMapPath, "map_keys.json")
 
 	fmt.Println("⚔️ Nox Maps Starting...")
-	
-	reader := eqlog.NewReader(eqPath)
+
+	var reader *eqlog.Reader
 	engine := parser.NewEngine()
 
-	if err := reader.Start(); err != nil {
-		log.Fatalf("Error starting log reader: %v", err)
+	// Only initialize log reader if path is configured
+	if cfg.EQPath != "" {
+		reader = eqlog.NewReader(cfg.EQPath)
+		if err := reader.Start(); err != nil {
+			log.Printf("Warning: Error starting log reader: %v", err)
+		} else {
+			go engine.ProcessLines(reader, reader.Lines)
+		}
+	} else {
+		fmt.Println("⚠️  No EQ path configured. Please set it in the menu bar.")
 	}
 
-	go engine.ProcessLines(reader, reader.Lines)
-
 	// Initialize UI with JSON config path
-	window := ui.NewWindow(engine, projectMapPath, lookupPath)
+	window := ui.NewWindow(engine, projectMapPath, lookupPath, cfg)
 	if err := window.Init(); err != nil {
 		log.Printf("Window init warning: %v", err)
 	}

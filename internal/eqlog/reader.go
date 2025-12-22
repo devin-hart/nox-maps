@@ -63,7 +63,16 @@ func (r *Reader) detectInitialZone() {
 	var lastZone string
 	for scanner.Scan() {
 		if matches := zoneRegex.FindStringSubmatch(scanner.Text()); len(matches) == 2 {
-			lastZone = matches[1]
+			zoneName := matches[1]
+
+			// Filter out status messages that aren't real zones
+			// e.g., "an Arena (PvP) area" is a status, not a zone name
+			if strings.Contains(zoneName, "(PvP)") ||
+			   strings.HasSuffix(zoneName, " area") {
+				continue
+			}
+
+			lastZone = zoneName
 		}
 	}
 
